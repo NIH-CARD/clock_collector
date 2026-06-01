@@ -1,0 +1,4 @@
+streamlit>=1.40
+anthropic>=0.40
+streamlit-javascript>=0.1.5
+streamlit-back-camera-input>=0.1.0

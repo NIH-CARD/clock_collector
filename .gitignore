@@ -1,0 +1,16 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Any stray output — this app must persist nothing
+data/
+*.json.tmp
+*.png.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
