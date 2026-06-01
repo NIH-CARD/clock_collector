@@ -7,8 +7,11 @@ API key, or network access.
 
 import os
 
+from datetime import datetime, timezone
+
 from scoring_utils import (
     compute_time_correct, to_24h, to_12h, fmt_12h, resolve_client_ip,
+    camera_decision, resolve_local_now,
 )
 from clock_analyzer import _extract_json, build_user_prompt
 import transient_output as tio
@@ -67,6 +70,49 @@ def test_fmt_12h():
     assert fmt_12h(13, 5) == "1:05 PM"
     assert fmt_12h(0, 0) == "12:00 AM"
     assert fmt_12h(12, 30) == "12:30 PM"
+
+
+# --------------------------------------------------------------------------- #
+# camera_decision — optimistic: only an insecure context hides the camera
+# --------------------------------------------------------------------------- #
+def test_camera_hidden_only_on_insecure():
+    # insecure server context -> upload only
+    assert camera_decision(False, None)[0] is False
+    assert camera_decision(False, "ok")[0] is False
+    # client probe says insecure -> upload only
+    assert camera_decision(True, "insecure")[0] is False
+
+
+def test_camera_shown_for_everything_else():
+    # pending, ok, and — crucially — a pre-permission "nocam"/"unsupported"/"error"
+    # must NOT hide a camera that would actually work.
+    for status in (None, "ok", "nocam", "unsupported", "error", "weird"):
+        show, msg = camera_decision(True, status)
+        assert show is True and msg is None
+
+
+# --------------------------------------------------------------------------- #
+# resolve_local_now — user's timezone, not the server's
+# --------------------------------------------------------------------------- #
+def test_local_now_uses_iana_timezone():
+    utc = datetime(2026, 6, 1, 16, 30, tzinfo=timezone.utc)
+    # America/New_York is UTC-4 in June (EDT) -> 12:30
+    local = resolve_local_now("America/New_York", None, utc)
+    assert (local.hour, local.minute) == (12, 30)
+
+
+def test_local_now_falls_back_to_offset():
+    utc = datetime(2026, 6, 1, 16, 30, tzinfo=timezone.utc)
+    # JS getTimezoneOffset for UTC-5 is +300; local = UTC - 300min = 11:30
+    local = resolve_local_now(None, 300, utc)
+    assert (local.hour, local.minute) == (11, 30)
+
+
+def test_local_now_no_signal_returns_utc():
+    utc = datetime(2026, 6, 1, 16, 30, tzinfo=timezone.utc)
+    assert resolve_local_now(None, None, utc) == utc
+    # an invalid IANA name falls through (here, to UTC since no offset given)
+    assert resolve_local_now("Not/AZone", None, utc) == utc
 
 
 # --------------------------------------------------------------------------- #

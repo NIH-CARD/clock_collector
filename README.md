@@ -21,8 +21,9 @@ goes to Claude Opus 4.8, which scores it against:
   conceptual deficit, perseveration, graphic difficulty, stimulus-bound, planning)
 - domain observations + cautious literature-association notes
 - a target-vs-drawn **time-accuracy** check — the time is entered on a 12-hour
-  picker (hour / minute / AM·PM), and the prompt reads the hands by **length**
-  (hour = the shorter hand, minute = the longer hand)
+  picker (hour / minute / AM·PM) that defaults to the **user's local time**
+  (from the browser timezone, not the server's), and the prompt reads the hands
+  by **length** (hour = the shorter hand, minute = the longer hand)
 
 A **Start over** button appears with the result; it clears all inputs and the
 captured photo (the capture widgets re-mount empty) and returns to the
@@ -89,14 +90,16 @@ Capture uses `st.camera_input` (live preview + click-to-capture) with
   by the browser (not a bug).
 - Any HTTPS deployment → camera works on desktop and mobile, including iOS Safari.
 
-**Detection is layered.** A server-side check (`camera_can_work(st.context.url)`)
-instantly catches the plain-HTTP-on-a-remote-host case. When the context looks
-fine, a client-side probe (`streamlit-javascript`, running
-`navigator.mediaDevices.enumerateDevices()` in the browser) also catches *no
-camera on the device* and *unsupported browsers*. In any of these cases the app
-shows an **upload-only** path with a cause-specific notice instead of a dead
-camera widget. If `streamlit-javascript` isn't installed, the app still runs and
-just relies on the server-side check.
+**Detection is optimistic.** The only thing that switches the app to an
+**upload-only** path is an *insecure context* — caught server-side by
+`camera_can_work(st.context.url)` (plain HTTP to a remote host) or by the
+client probe returning `"insecure"`. The app does **not** hide the camera just
+because `navigator.mediaDevices.enumerateDevices()` reports no video device:
+that call returns no `videoinput` *before the user grants camera permission* on
+many browsers (notably iOS Safari), so trusting it would wrongly hide a working
+camera over the web. The **Upload** tab is always available as a fallback, so a
+device with genuinely no camera loses nothing. If `streamlit-javascript` isn't
+installed, the app still runs on the server-side check alone.
 
 To test the camera on a phone during development, use an HTTPS URL — deploy to
 an HTTPS host, or tunnel (`cloudflared tunnel --url http://localhost:8501` /

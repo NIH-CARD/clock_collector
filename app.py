@@ -28,7 +28,7 @@ import transient_output as tio
 from clock_analyzer import analyze_clock
 from scoring_utils import (
     compute_time_correct, camera_can_work, camera_decision, normalize_image,
-    to_24h, to_12h, fmt_12h, resolve_client_ip,
+    to_24h, to_12h, fmt_12h, resolve_client_ip, resolve_local_now,
 )
 
 # Optional client-side camera probe. If the package isn't installed the app
@@ -85,8 +85,9 @@ EXT_BY_MIME = {"image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "i
 # Helpers
 # --------------------------------------------------------------------------- #
 def _has_secret() -> bool:
+    """True only when a NON-EMPTY ANTHROPIC_API_KEY secret is configured."""
     try:
-        return "ANTHROPIC_API_KEY" in st.secrets
+        return bool(str(st.secrets.get("ANTHROPIC_API_KEY", "")).strip())
     except Exception:
         return False
 
@@ -141,6 +142,26 @@ def current_url():
         return getattr(st.context, "url", None)
     except Exception:
         return None
+
+
+def user_local_now():
+    """Current time in the *user's* timezone (from the browser), not the server's.
+
+    A deployed app runs in UTC, so ``datetime.now()`` would default the clock
+    picker to the wrong time. Reads ``st.context.timezone`` / ``timezone_offset``
+    and converts; falls back to the server's local time if neither is available.
+    """
+    utc_now = datetime.now(timezone.utc)
+    try:
+        ctx = st.context
+        tz_name = getattr(ctx, "timezone", None)
+        tz_offset = getattr(ctx, "timezone_offset", None)
+    except Exception:
+        tz_name, tz_offset = None, None
+    local = resolve_local_now(tz_name, tz_offset, utc_now)
+    if local is utc_now and not tz_name and tz_offset is None:
+        return datetime.now()  # no browser signal — best-effort server local
+    return local
 
 
 # JS run in the browser: secure-context + real-camera check. Returns one of
@@ -255,7 +276,7 @@ st.markdown(
     "Draw a **circular analog clock** and set the hands to **the time right "
     "now**, then confirm that time so the drawing can be checked against it."
 )
-now_local = datetime.now()
+now_local = user_local_now()
 def_h12, def_meridiem = to_12h(now_local.hour)
 col_h, col_m, col_ap = st.columns([2, 2, 1])
 with col_h:

@@ -47,12 +47,22 @@ When adding logic, prefer putting testable pieces in `scoring_utils.py` or
 `transient_output.py`, and keep `app.py` as a thin UI layer.
 
 **Camera:** browsers allow `st.camera_input` only in a secure context (HTTPS or
-localhost). Detection is layered: `camera_can_work(st.context.url)` catches
-plain-HTTP-on-a-remote-host server-side, and a client-side probe
-(`streamlit-javascript`, optional — graceful fallback if absent) catches
-no-camera/unsupported-browser. `camera_decision(server_ok, client_status)` (pure,
-tested) maps both signals to (show_camera, message). Don't "fix" a phone camera
-that fails on a `http://<lan-ip>` URL — that's the browser rule; use HTTPS/a tunnel.
+localhost). `camera_decision(server_ok, client_status)` (pure, tested) is
+deliberately **optimistic**: the only thing that hides the camera is an insecure
+context (`camera_can_work(st.context.url)` is False, or the client probe returns
+`"insecure"`). It does NOT hide on `"nocam"`/`"unsupported"`/`"error"`, because
+`enumerateDevices()` reports no `videoinput` *before* the user grants camera
+permission (notably on mobile Safari), so trusting it false-negatives a working
+camera over the web. The Upload tab is always present as a fallback. The
+client-side probe (`streamlit-javascript`, optional) now only matters for the
+insecure signal. Don't "fix" a phone camera that fails on a `http://<lan-ip>`
+URL — that's the browser rule; use HTTPS/a tunnel.
+
+**Clock time default:** the picker defaults to the *user's* local time, not the
+server's (a deployed app runs in UTC). `user_local_now()` reads
+`st.context.timezone` / `timezone_offset` and `resolve_local_now()` (pure,
+tested) converts via `zoneinfo` (IANA name preferred, offset fallback). `tzdata`
+is in `requirements.txt` so `zoneinfo` resolves on any host.
 Capture defaults to the **rear camera** (`streamlit-back-camera-input`, optional,
 falls back to `st.camera_input`) so it points at the drawing, not the user's face.
 All sources are normalized to `(bytes, mime)` by `normalize_image()` (pure, tested);
