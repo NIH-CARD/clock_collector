@@ -8,8 +8,9 @@ immediately. Intended for testing with SYNTHETIC data only.
 
 Flow:
   1. Loud alpha / no-storage / synthetic-data disclaimer + acknowledgement.
-  2. Inputs (synthetic): age, cognitive status, confirm current local time.
-  3. Capture: photo (camera) or upload of a hand-drawn analog clock.
+  2. Inputs (synthetic): age, cognitive status. The drawing target is the FIXED
+     standardized CDT time "ten past eleven" (11:10), read aloud to the person.
+  3. Capture: photo (camera / countdown auto-capture) or upload of the clock.
   4. Analyze with Claude Opus 4.8 against CDT scoring frameworks.
   5. Name files as <ip>__<date>.png / .json, print the JSON, then delete both
      files and confirm.
@@ -28,7 +29,8 @@ import transient_output as tio
 from clock_analyzer import analyze_clock
 from scoring_utils import (
     compute_time_correct, camera_can_work, camera_decision, normalize_image,
-    to_24h, to_12h, fmt_12h, resolve_client_ip, resolve_local_now,
+    fmt_12h, resolve_client_ip, STANDARD_HOUR, STANDARD_MINUTE, STANDARD_TIME_SPOKEN,
+    score_rows, mendez_failed_labels, detail_lines, format_depicted,
 )
 
 # Optional client-side camera probe. If the package isn't installed the app
@@ -38,6 +40,15 @@ try:
     _HAS_JS_BRIDGE = True
 except Exception:
     _HAS_JS_BRIDGE = False
+
+# In-browser countdown auto-capture component (live preview -> 5s countdown ->
+# auto-grab -> returns a data: URL). Optional — falls back to the rear-camera /
+# stock camera widgets below if it can't be imported.
+try:
+    from components.clock_camera import clock_camera_input
+    _HAS_CLOCK_CAMERA = True
+except Exception:
+    _HAS_CLOCK_CAMERA = False
 
 # Optional rear-camera widget (defaults to the back camera on phones, which is
 # better for privacy — it points at the drawing, not the user's face). Falls
@@ -144,26 +155,6 @@ def current_url():
         return None
 
 
-def user_local_now():
-    """Current time in the *user's* timezone (from the browser), not the server's.
-
-    A deployed app runs in UTC, so ``datetime.now()`` would default the clock
-    picker to the wrong time. Reads ``st.context.timezone`` / ``timezone_offset``
-    and converts; falls back to the server's local time if neither is available.
-    """
-    utc_now = datetime.now(timezone.utc)
-    try:
-        ctx = st.context
-        tz_name = getattr(ctx, "timezone", None)
-        tz_offset = getattr(ctx, "timezone_offset", None)
-    except Exception:
-        tz_name, tz_offset = None, None
-    local = resolve_local_now(tz_name, tz_offset, utc_now)
-    if local is utc_now and not tz_name and tz_offset is None:
-        return datetime.now()  # no browser signal — best-effort server local
-    return local
-
-
 # JS run in the browser: secure-context + real-camera check. Returns one of
 # "ok" | "nocam" | "insecure" | "unsupported" | "error".
 _CAMERA_PROBE_JS = """await (async () => {
@@ -217,8 +208,9 @@ with st.container(border=True):
         "- 🧍 **Use synthetic / fake inputs only.** Do not enter real people's "
         "information while testing.\n"
         "- 🩺 **Not diagnostic.** This applies published Clock Drawing Test "
-        "scoring (MoCA clock item, Shulman, Sunderland, qualitative error "
-        "analysis) with help from an AI model. It **cannot** identify "
+        "scoring (MoCA clock item, Shulman, Sunderland, ACE-III, Mendez CDIS, "
+        "qualitative error analysis) with help from an AI model. It **cannot** "
+        "identify "
         "Alzheimer's, dementia, Parkinson's, or any condition. Many "
         "non-cognitive factors (eyesight, hand control, the pen, photo quality) "
         "affect a clock drawing.\n"
@@ -271,27 +263,24 @@ with col_a:
 with col_b:
     status = st.selectbox("Cognitive status (synthetic)", COGNITIVE_STATUS_OPTIONS, index=0)
 
-st.header("2. The current time")
+st.header("2. What to ask the person to draw")
+# Fixed, standardized Clock Drawing Test command time (not the current time): a
+# spoken target embeds temporal-abstraction info the way clinical screeners do.
+target_hour, target_minute = STANDARD_HOUR, STANDARD_MINUTE
+_h12 = target_hour % 12 or 12
 st.markdown(
-    "Draw a **circular analog clock** and set the hands to **the time right "
-    "now**, then confirm that time so the drawing can be checked against it."
+    "Read this instruction aloud to the person, exactly as written:\n\n"
+    f"> ### “Please draw a clock. Draw a circle, put in all the numbers from 1 "
+    f"to 12, and set the time to {target_minute} past {_h12} ({STANDARD_TIME_SPOKEN}).”"
 )
-now_local = user_local_now()
-def_h12, def_meridiem = to_12h(now_local.hour)
-col_h, col_m, col_ap = st.columns([2, 2, 1])
-with col_h:
-    sel_hour12 = st.selectbox("Hour", list(range(1, 13)), index=def_h12 - 1)
-with col_m:
-    sel_minute = st.number_input("Minute", min_value=0, max_value=59,
-                                 value=now_local.minute, step=1, format="%02d")
-with col_ap:
-    sel_meridiem = st.selectbox("AM/PM", ["AM", "PM"], index=0 if def_meridiem == "AM" else 1)
+st.caption(
+    f"The drawing is checked against the standardized CDT time "
+    f"**{fmt_12h(target_hour, target_minute)}** — the same target used by the "
+    "Mendez CDIS. Don't substitute the current time."
+)
 
-target_hour = to_24h(sel_hour12, sel_meridiem)
-target_minute = int(sel_minute)
-st.caption(f"Checking the drawing against **{sel_hour12}:{target_minute:02d} {sel_meridiem}**.")
-
-st.header("3. The drawing")
+st.header("3. Take a picture of your clock")
+st.markdown("#### 📷 When the drawing is finished, take a picture of it.")
 st.error(
     "🚫 **Do not include sensitive content in images — in particular your face.** "
     "Capture **only the clock drawing.** Use the rear camera and keep people, "
@@ -306,15 +295,22 @@ show_camera, camera_message = camera_decision(server_ok, client_status)
 nonce = st.session_state.get("form_nonce", 0)
 
 if show_camera:
-    st.markdown("Take a clear, well-lit photo of the finished clock, or upload one.")
-    tab_cam, tab_upload = st.tabs(["📷 Camera", "📁 Upload"])
+    tab_cam, tab_upload = st.tabs(["📷 Camera", "📁 Upload a photo"])
     with tab_cam:
-        if _HAS_BACK_CAMERA:
+        if _HAS_CLOCK_CAMERA:
+            st.markdown(
+                "**Point the rear camera at the whole clock.** Press "
+                "**Start countdown** — it counts **5 → 1** and takes the picture "
+                "for you. (Or press **Take photo now** to snap it yourself.)"
+            )
+            cam_raw = clock_camera_input(key=f"cc_{nonce}")
+        elif _HAS_BACK_CAMERA:
             st.caption("Uses your device's rear camera when available. Tap the video to capture.")
             cam_raw = back_camera_input(key=f"cam_{nonce}")
         else:
             cam_raw = st.camera_input("Hold the clock up to the camera", key=f"cam_{nonce}")
     with tab_upload:
+        st.caption("No camera? Take a photo another way and upload it here.")
         up_raw = st.file_uploader(
             "Upload a photo", type=["png", "jpg", "jpeg", "webp"], key=f"upload_{nonce}"
         )
@@ -358,8 +354,9 @@ if analyze and image_payload is not None:
             st.error(f"Sorry — the analysis failed: {exc}")
             st.stop()
 
-    # derive the time-accuracy check on our side
-    depicted = analysis.get("depicted_time", {})
+    # derive the time-accuracy check on our side ("or {}": the model may send a
+    # null depicted_time, for which .get(..., {}) would still return None)
+    depicted = analysis.get("depicted_time") or {}
     time_correct = compute_time_correct(target_hour, target_minute, depicted)
     if time_correct is None:
         time_correct = analysis.get("time_matches_target")
@@ -389,14 +386,10 @@ if analyze and image_payload is not None:
         "inputs": {
             "self_reported_age": age,
             "self_reported_cognitive_status": status,
-            "target_local_time": fmt_12h(target_hour, target_minute),
         },
         "time_check": {
             "target": fmt_12h(target_hour, target_minute),
-            "depicted": (
-                f"{depicted.get('hour')}:{depicted.get('minute'):02d}"
-                if depicted.get("readable") and depicted.get("hour") is not None else "unclear"
-            ),
+            "depicted": format_depicted(depicted),
             "time_correct": time_correct,
         },
         "analysis": analysis_clean,
@@ -418,36 +411,90 @@ if analyze and image_payload is not None:
         "image_mime": media_type,
         "json_deleted": json_deleted,
         "image_deleted": img_deleted,
-        "screening_flag": analysis.get("screening_flag"),
-        "summary": analysis.get("overall_summary"),
-        "clock_detected": analysis.get("clock_detected", True),
+        "analysis": analysis_clean,
+        "time_check": payload["time_check"],
     }
 
 
 # --------------------------------------------------------------------------- #
 # Results: print the JSON, then confirm deletion of both files
 # --------------------------------------------------------------------------- #
+def _render_next_steps() -> None:
+    """A clearly non-diagnostic 'what to do with this' panel. Deliberately names
+    no condition and gives no clinical cut-off — it points back to a qualified
+    clinician and lists the many non-cognitive factors that affect a drawing."""
+    with st.container(border=True):
+        st.markdown(
+            "#### What to do with this result\n"
+            "- 🩺 **This is not a diagnosis.** It is an automated screening-"
+            "awareness observation only. A clock drawing on its own cannot "
+            "identify any medical condition.\n"
+            "- 👩‍⚕️ **If you have concerns about thinking or memory** — your "
+            "own or someone you care for — share them with a **qualified "
+            "healthcare provider**, who can decide whether a full evaluation is "
+            "appropriate. Bring examples of any day-to-day changes you've "
+            "noticed.\n"
+            "- ✏️ **Many non-cognitive things change a clock drawing:** eyesight, "
+            "hand or motor control, the pen and paper, arthritis, tiredness, "
+            "language, education, and photo quality. A low score here is not "
+            "proof of anything.\n"
+            "- 🚑 This tool is **not** for emergencies. For urgent symptoms "
+            "(sudden confusion, weakness, trouble speaking), seek medical care "
+            "right away."
+        )
+
+
 def render_result(r: dict) -> None:
+    a = r.get("analysis") or {}
     st.header("Result")
     st.warning(
         "Automated **screening observation, not a diagnosis** — and this is an "
         "**alpha** running on **synthetic test data.**"
     )
 
-    if not r.get("clock_detected", True):
+    if not a.get("clock_detected", True):
         st.error("No clock could be detected in the image.")
-
-    st.caption(f"Captured IP (used only to name files): `{r['ip']}`")
 
     if r.get("image"):
         st.image(r["image"], caption=f"Drawing — `{r['image_filename']}` (not stored)", width=320)
-    if r.get("summary"):
-        st.write(r["summary"])
+
+    # 1) Quick description of what was drawn
+    if a.get("clock_description"):
+        st.subheader("What was drawn")
+        st.write(a["clock_description"])
+
+    # 2) Time check + the score tables
+    tc = r.get("time_check") or {}
+    if tc:
+        mark = {True: "✅ correct", False: "❌ off-target"}.get(tc.get("time_correct"), "❔ unclear")
+        st.caption(f"Requested **{tc.get('target')}** · drawn **{tc.get('depicted')}** — {mark}")
+
+    st.subheader("Scores")
+    st.caption("Published CDT scales — higher is better. Screening scores, **not** a diagnosis or cut-off.")
+    st.table(score_rows(a))
+    failed = mendez_failed_labels(a)
+    if failed:
+        with st.expander(f"Mendez CDIS — {len(failed)} item(s) not met"):
+            st.markdown("\n".join(f"- {label}" for label in failed))
+
+    # 3) Rationale
+    if a.get("overall_summary"):
+        st.subheader("Rationale")
+        st.write(a["overall_summary"])
+
+    notes = detail_lines(a)
+    if notes:
+        with st.expander("More detail (per-scale notes, observations, errors)"):
+            st.markdown("\n".join(notes))
+
+    _render_next_steps()
 
     st.subheader("Result files (transient — not stored)")
+    st.caption(f"Captured IP (used only to name files): `{r['ip']}`")
     st.write(f"**Drawing file:** `{r['image_filename']}`")
     st.write(f"**JSON file:** `{r['json_filename']}`")
-    st.code(r["json_text"], language="json")
+    with st.expander("Raw result JSON (the transient file's contents)"):
+        st.code(r["json_text"], language="json")
 
     # let the tester save locally if they want; the app itself keeps nothing
     c1, c2 = st.columns(2)

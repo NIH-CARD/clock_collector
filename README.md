@@ -11,19 +11,22 @@ A prototype that analyzes a hand-drawn analog clock with **Claude Opus 4.8
 
 ## What it does
 
-A tester enters synthetic age + cognitive status, confirms the current time,
-draws a circular analog clock set to that time, and photographs it. The image
-goes to Claude Opus 4.8, which scores it against:
+A tester enters synthetic age + cognitive status, then asks the person to draw a
+circular analog clock set to the standardized command time **"ten past eleven"
+(11:10)** and photographs it. The image goes to Claude Opus 4.8, which scores it
+against:
 
 - **MoCA clock item** (0–3: contour / numbers / hands)
 - **Shulman 5-point** and **Sunderland 10-point** scales
+- **ACE-III clock item** (0–5: circle / numbers / hands — the numbers point is
+  lost when digits are drawn outside the circle)
+- **Mendez CDIS** (20 items, 0–20: general / number / hand groups)
 - **Rouleau-style qualitative error analysis** (visuospatial/executive,
   conceptual deficit, perseveration, graphic difficulty, stimulus-bound, planning)
 - domain observations + cautious literature-association notes
-- a target-vs-drawn **time-accuracy** check — the time is entered on a 12-hour
-  picker (hour / minute / AM·PM) that defaults to the **user's local time**
-  (from the browser timezone, not the server's), and the prompt reads the hands
-  by **length** (hour = the shorter hand, minute = the longer hand)
+- a target-vs-drawn **time-accuracy** check against the fixed 11:10 target; the
+  prompt reads the hands by **length** (hour = the shorter hand, minute = the
+  longer hand)
 
 A **Start over** button appears with the result; it clears all inputs and the
 captured photo (the capture widgets re-mount empty) and returns to the
@@ -81,9 +84,12 @@ any key that has been committed.
 
 ## Camera capture (needs HTTPS or localhost)
 
-Capture uses `st.camera_input` (live preview + click-to-capture) with
-`st.file_uploader` as the alternative. Browsers only allow camera access in a
-**secure context** — HTTPS, or a `localhost` origin — so:
+Capture uses a custom **countdown auto-capture** component
+(`components/clock_camera`): a live rear-camera preview with a **Start countdown**
+button that counts 5 → 1 and grabs the frame automatically (helpful for someone
+who can't reliably tap at the right moment), plus a **Take photo now** button.
+`st.file_uploader` is always available as the alternative. Browsers only allow
+camera access in a **secure context** — HTTPS, or a `localhost` origin — so:
 
 - `http://localhost:8501` on the dev machine → camera works.
 - `http://<lan-ip>:8501` from your phone over plain HTTP → camera is **blocked**
@@ -107,21 +113,22 @@ an HTTPS host, or tunnel (`cloudflared tunnel --url http://localhost:8501` /
 and opening `http://localhost:8501` in the Windows browser counts as localhost,
 so the camera works there.
 
-Note: capture defaults to the **rear camera** on phones via
-`streamlit-back-camera-input` (the camera points at the drawing, not the user's
-face — better for privacy). If that package isn't installed, it falls back to
-`st.camera_input` (browser's default camera). All capture sources — the
-back-camera widget (base64 data URL), `st.camera_input`/`st.file_uploader`
-(UploadedFile), or raw bytes — are normalized to `(bytes, mime)` by
-`normalize_image()` before analysis.
+Note: capture defaults to the **rear camera** (the camera points at the drawing,
+not the user's face — better for privacy). The `clock_camera` component requests
+the rear camera directly; if it can't be imported the app falls back to
+`streamlit-back-camera-input`, then to `st.camera_input` (browser's default
+camera). All capture sources — the countdown component / back-camera widget
+(base64 data URL), `st.camera_input`/`st.file_uploader` (UploadedFile), or raw
+bytes — are normalized to `(bytes, mime)` by `normalize_image()` before analysis.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `app.py` | Streamlit UI: acknowledgement gate, capture, print-then-delete result |
-| `clock_analyzer.py` | Claude Opus 4.8 vision call + CDT prompt + JSON parsing |
-| `scoring_utils.py` | Pure helpers (e.g. time-accuracy check); unit-tested |
+| `app.py` | Streamlit UI: acknowledgement gate, fixed 11:10 instruction, capture, results (description + score tables + rationale), print-then-delete result |
+| `clock_analyzer.py` | Claude Opus 4.8 vision call + CDT prompt (MoCA / Shulman / Sunderland / ACE-III / Mendez CDIS) + JSON parsing |
+| `scoring_utils.py` | Pure helpers (time-accuracy check, standardized-time constants, result-table formatting); unit-tested |
+| `components/clock_camera/` | In-browser countdown auto-capture component (live preview → 5→1 countdown → returns a `data:` URL); no npm build |
 | `transient_output.py` | Names files from IP + date, writes temp files, then deletes them |
 | `test_basic.py` | pytest suite for the pure logic (no Streamlit/SDK/network) |
 | `logos/` | Header branding shown at the top of the app (DataTecnica, Center for Alzheimer's, VCU) |
@@ -173,6 +180,17 @@ writing.
   Alzheimer's disease: a novel measure of dementia severity.
   *J Am Geriatr Soc.* 1989;37(8):725–729.
   https://pubmed.ncbi.nlm.nih.gov/2754157/
+- **ACE-III clock item (0–5).** Hsieh S, Schubert S, Hoon C, Mioshi E, Hodges
+  JR. Validation of the Addenbrooke's Cognitive Examination III in frontotemporal
+  dementia and Alzheimer's disease. *Dement Geriatr Cogn Disord.*
+  2013;36(3–4):242–250. https://doi.org/10.1159/000351671 — the clock is scored
+  circle (1) / numbers (2) / hands (2); the numbers point is lost when digits
+  fall outside the circle. Command time: "ten past five" (the app uses 11:10).
+- **Mendez CDIS (20-item, 0–20).** Mendez MF, Ala T, Underwood KL. Development
+  of scoring criteria for the clock drawing task in Alzheimer's disease.
+  *J Am Geriatr Soc.* 1992;40(11):1095–1099.
+  https://doi.org/10.1111/j.1532-5415.1992.tb01796.x — 20 items scored 0/1
+  (general / number / hand groups); built around the "ten past eleven" command.
 - **Rouleau qualitative error taxonomy.** Rouleau I, Salmon DP, Butters N,
   Kennedy C, McGuire K. Quantitative and qualitative analyses of clock drawings
   in Alzheimer's and Huntington's disease. *Brain Cogn.* 1992;18(1):70–87.

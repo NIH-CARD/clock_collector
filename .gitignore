@@ -7,6 +7,11 @@ data/
 *.json.tmp
 *.png.tmp
 
+# Local-only working references: copyrighted source PDFs and raw reviewer notes
+# (which may name individuals). Cite via DOI/PubMed in the README instead.
+reference_publications/
+alpha_feedback.txt
+
 # Python
 __pycache__/
 *.py[cod]

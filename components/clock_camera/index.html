@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clock camera</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Source Sans Pro", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: inherit;
+  }
+  #wrap { max-width: 640px; margin: 0 auto; }
+  #stage {
+    position: relative;
+    width: 100%;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    aspect-ratio: 4 / 3;
+  }
+  video, #shot {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  #shot { display: none; }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    color: #fff;
+    font-size: clamp(64px, 28vw, 180px);
+    font-weight: 800;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+  }
+  #msg {
+    display: none;
+    padding: 16px;
+    text-align: center;
+    font-size: 18px;
+    line-height: 1.4;
+  }
+  #controls {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  button {
+    flex: 1 1 160px;
+    min-height: 64px;
+    font-size: 20px;
+    font-weight: 700;
+    border: 0;
+    border-radius: 12px;
+    cursor: pointer;
+    padding: 12px 16px;
+  }
+  .primary { background: #d6336c; color: #fff; }
+  .primary:disabled { opacity: 0.5; cursor: default; }
+  .secondary { background: #495057; color: #fff; }
+  .secondary:disabled { opacity: 0.5; cursor: default; }
+  #hint {
+    margin: 10px 2px 0;
+    font-size: 16px;
+    opacity: 0.85;
+    text-align: center;
+  }
+  #done {
+    display: none;
+    margin: 10px 2px 0;
+    font-size: 18px;
+    font-weight: 700;
+    color: #2b8a3e;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="shot" alt="Captured photo of the clock" />
+    <div id="overlay" aria-hidden="true">5</div>
+    <div id="msg"></div>
+  </div>
+
+  <div id="controls">
+    <button id="startBtn" class="primary" type="button">▶ Start countdown</button>
+    <button id="snapBtn" class="secondary" type="button">📸 Take photo now</button>
+    <button id="retakeBtn" class="secondary" type="button" style="display:none">↺ Retake</button>
+  </div>
+
+  <p id="hint">Point the rear camera at the whole clock, then press
+    <b>Start countdown</b>. It will count <b>5 → 1</b> and take the picture for you.</p>
+  <p id="done">✓ Photo captured. Press <b>Analyze clock</b> below, or <b>Retake</b>.</p>
+
+  <canvas id="canvas" style="display:none"></canvas>
+</div>
+
+<script>
+// ---- Minimal Streamlit component protocol (no npm build) ----------------- //
+function _send(type, data) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
+}
+const Streamlit = {
+  setComponentReady() { _send("streamlit:componentReady", { apiVersion: 1 }); },
+  setFrameHeight(h) { _send("streamlit:setFrameHeight", { height: h }); },
+  setComponentValue(v) { _send("streamlit:setComponentValue", { value: v, dataType: "json" }); },
+};
+
+function syncHeight() {
+  // A little padding so controls are never clipped.
+  Streamlit.setFrameHeight(document.body.scrollHeight + 4);
+}
+
+// ---- Elements ------------------------------------------------------------ //
+const video = document.getElementById("video");
+const shot = document.getElementById("shot");
+const overlay = document.getElementById("overlay");
+const msg = document.getElementById("msg");
+const canvas = document.getElementById("canvas");
+const startBtn = document.getElementById("startBtn");
+const snapBtn = document.getElementById("snapBtn");
+const retakeBtn = document.getElementById("retakeBtn");
+const hint = document.getElementById("hint");
+const done = document.getElementById("done");
+
+let stream = null;
+let countdownTimer = null;
+
+function showMessage(text) {
+  video.style.display = "none";
+  overlay.style.display = "none";
+  msg.style.display = "block";
+  msg.innerHTML = text;
+  startBtn.disabled = true;
+  snapBtn.disabled = true;
+  syncHeight();
+}
+
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showMessage("📷 This browser can't open the camera here.<br>Please use the <b>Upload</b> tab instead.");
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    syncHeight();
+  } catch (err) {
+    showMessage("📷 The camera could not be started (permission denied or no camera).<br>Please use the <b>Upload</b> tab instead.");
+  }
+}
+
+function clearCountdown() {
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  overlay.style.display = "none";
+}
+
+function setBusy(busy) {
+  startBtn.disabled = busy;
+  snapBtn.disabled = busy;
+}
+
+function runCountdown() {
+  if (!stream) return;
+  let n = 5;
+  overlay.textContent = n;
+  overlay.style.display = "flex";
+  setBusy(true);
+  countdownTimer = setInterval(() => {
+    n -= 1;
+    if (n <= 0) {
+      clearCountdown();
+      capture();
+    } else {
+      overlay.textContent = n;
+    }
+  }, 1000);
+}
+
+function capture() {
+  if (!stream) return;
+  const w = video.videoWidth || 1280;
+  const h = video.videoHeight || 960;
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+
+  shot.src = dataUrl;
+  shot.style.display = "block";
+  video.style.display = "none";
+  overlay.style.display = "none";
+  startBtn.style.display = "none";
+  snapBtn.style.display = "none";
+  retakeBtn.style.display = "";
+  hint.style.display = "none";
+  done.style.display = "block";
+
+  Streamlit.setComponentValue(dataUrl);
+  syncHeight();
+}
+
+function retake() {
+  shot.style.display = "none";
+  shot.removeAttribute("src");
+  video.style.display = "block";
+  startBtn.style.display = "";
+  snapBtn.style.display = "";
+  retakeBtn.style.display = "none";
+  hint.style.display = "block";
+  done.style.display = "none";
+  setBusy(false);
+  Streamlit.setComponentValue(null);
+  syncHeight();
+}
+
+startBtn.addEventListener("click", runCountdown);
+snapBtn.addEventListener("click", () => { clearCountdown(); capture(); });
+retakeBtn.addEventListener("click", retake);
+video.addEventListener("loadedmetadata", syncHeight);
+window.addEventListener("resize", syncHeight);
+
+// Streamlit calls us with a render event; we only need it to know we're mounted.
+window.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "streamlit:render") { syncHeight(); }
+});
+
+Streamlit.setComponentReady();
+syncHeight();
+startCamera();
+</script>
+</body>
+</html>
