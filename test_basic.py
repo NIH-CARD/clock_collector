@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 from scoring_utils import (
     compute_time_correct, to_24h, to_12h, fmt_12h, resolve_client_ip,
     camera_decision, resolve_local_now,
+    STANDARD_HOUR, STANDARD_MINUTE, STANDARD_TIME_SPOKEN,
+    fmt_score, score_rows, mendez_failed_labels, detail_lines, format_depicted,
+    MENDEZ_ITEM_LABELS,
 )
 from clock_analyzer import _extract_json, build_user_prompt
 import transient_output as tio
@@ -169,6 +172,122 @@ def test_user_prompt_includes_target_time_and_inputs():
     assert "11:10" in p
     assert "72" in p
     assert "No known concerns" in p
+
+
+def test_standard_time_constant():
+    # the app fixes the command time to the standardized CDT value
+    assert (STANDARD_HOUR, STANDARD_MINUTE) == (11, 10)
+    assert STANDARD_TIME_SPOKEN == "ten past eleven"
+
+
+def test_user_prompt_includes_ace3_and_mendez():
+    p = build_user_prompt(STANDARD_HOUR, STANDARD_MINUTE, "65", "No known concerns")
+    # the two added rubrics are present in both the instructions and the schema
+    assert "ACE-III clock item" in p and "ace3_clock" in p
+    assert "Mendez CDIS" in p and "mendez_cdis" in p
+    # all 20 Mendez items are enumerated
+    for i in range(1, 21):
+        assert f"\n  {i}." in p
+    # the feedback-specific cues: numbers-outside penalty + hand differentiation
+    assert "TOTALLY WITHIN" in p
+    assert "visibly longer" in p
+
+
+def test_user_prompt_requests_clock_description():
+    p = build_user_prompt(STANDARD_HOUR, STANDARD_MINUTE, "65", "No known concerns")
+    assert "clock_description" in p
+
+
+# --------------------------------------------------------------------------- #
+# Result formatting helpers
+# --------------------------------------------------------------------------- #
+_SAMPLE = {
+    "moca_clock": {"contour": 1, "numbers": 1, "hands": 0, "total": 2},
+    "shulman_5point": {"score": 4, "rationale": "minor hand error"},
+    "sunderland_10point": {"score": 8, "rationale": "mostly intact"},
+    "ace3_clock": {"circle": 1, "numbers": 2, "hands": 1, "total": 4},
+    "mendez_cdis": {"items": {str(i): 1 for i in range(1, 21)}, "total": 20},
+    "qualitative_errors": ["planning"],
+    "domain_observations": "good spatial layout",
+    "literature_association_notes": "non-specific",
+    "overall_summary": "A clear clock.",
+}
+
+
+def test_fmt_score_handles_missing():
+    assert fmt_score(2, 3) == "2 / 3"
+    assert fmt_score(None, 3) == "—"
+    assert fmt_score("x", 3) == "—"
+
+
+def test_score_rows_shape_and_values():
+    rows = score_rows(_SAMPLE)
+    assert [r["Scale"] for r in rows] == [
+        "MoCA clock", "Shulman 5-point", "Sunderland 10-point",
+        "ACE-III clock", "Mendez CDIS",
+    ]
+    by_scale = {r["Scale"]: r for r in rows}
+    assert by_scale["MoCA clock"]["Score"] == "2 / 3"
+    assert "hands 0" in by_scale["MoCA clock"]["Breakdown"]
+    assert by_scale["ACE-III clock"]["Score"] == "4 / 5"
+    assert by_scale["Mendez CDIS"]["Score"] == "20 / 20"
+
+
+def test_score_rows_tolerates_empty_analysis():
+    rows = score_rows({})
+    assert all(r["Score"] == "—" for r in rows)
+    rows_none = score_rows(None)
+    assert len(rows_none) == 5
+
+
+def test_mendez_failed_labels_lists_only_zeros():
+    a = {"mendez_cdis": {"items": {str(i): 1 for i in range(1, 21)}}}
+    a["mendez_cdis"]["items"]["4"] = 0
+    a["mendez_cdis"]["items"]["8"] = 0
+    failed = mendez_failed_labels(a)
+    assert len(failed) == 2
+    assert failed[0].startswith("#4.") and "ten-past" in failed[0]
+    assert failed[1].startswith("#8.")
+    # a perfect score yields nothing
+    assert mendez_failed_labels(_SAMPLE) == []
+
+
+def test_detail_lines_includes_present_fields_only():
+    lines = detail_lines(_SAMPLE)
+    joined = "\n".join(lines)
+    assert "Shulman" in joined and "minor hand error" in joined
+    assert "Qualitative errors" in joined and "planning" in joined
+    assert "Domain observations" in joined
+    # nothing fabricated for an empty analysis
+    assert detail_lines({}) == []
+
+
+def test_format_depicted():
+    assert format_depicted({"readable": True, "hour": 11, "minute": 10}) == "11:10"
+    assert format_depicted({"readable": True, "hour": 9, "minute": 5}) == "9:05"
+    # the model may send a null hour/minute or readable=false -> never crash
+    assert format_depicted({"readable": True, "hour": 11, "minute": None}) == "unclear"
+    assert format_depicted({"readable": True, "hour": None, "minute": 10}) == "unclear"
+    assert format_depicted({"readable": False}) == "unclear"
+    assert format_depicted(None) == "unclear"
+
+
+def test_mendez_labels_count_matches_items():
+    # one display label per CDIS item — positional coupling guard
+    assert len(MENDEZ_ITEM_LABELS) == 20
+    # the 11:10 anchors line up with Mendez items 4 ('2') and 9 ('11')
+    assert "2" in MENDEZ_ITEM_LABELS[3]
+    assert "11" in MENDEZ_ITEM_LABELS[8]
+
+
+def test_formatters_tolerate_wrong_typed_model_output():
+    # model returns lists where dicts are expected -> must not raise
+    bad = {"moca_clock": [1, 1, 1], "mendez_cdis": {"items": [0, 1]},
+           "shulman_5point": "oops"}
+    rows = score_rows(bad)
+    assert len(rows) == 5 and all(r["Score"] == "—" for r in rows)
+    assert mendez_failed_labels(bad) == []
+    assert detail_lines(bad) == []
 
 
 # --------------------------------------------------------------------------- #

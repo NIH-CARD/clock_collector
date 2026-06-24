@@ -36,9 +36,10 @@ diagnostic tool and **not** a validated instrument.
 
 | File | Responsibility |
 |------|----------------|
-| `app.py` | Streamlit UI: disclaimer/ack gate, inputs (12-hour time picker), capture, analyze, render, **Start over**. UI only — keep logic thin. Capture widgets are keyed with a `form_nonce`; `_start_over()` clears session state and bumps the nonce so the held photo/upload is dropped, not just unread. |
-| `clock_analyzer.py` | Builds the CDT prompt, calls Claude Opus 4.8 (vision), parses JSON. The prompt reads hands by **length** — hour = the shorter hand, minute = the longer hand — and marks the time ambiguous if the hands aren't two distinguishable lengths. The `anthropic` SDK is imported lazily inside `analyze_clock` so the module imports without the SDK. |
-| `scoring_utils.py` | Pure helpers (`compute_time_correct`, `camera_can_work`). No Streamlit/SDK imports — unit-test here. |
+| `app.py` | Streamlit UI: disclaimer/ack gate, synthetic inputs, the **fixed 11:10 drawing instruction**, capture, analyze, render (incl. "Scores at a glance" + a non-diagnostic "What to do with this" panel), **Start over**. UI only — keep logic thin. Capture widgets are keyed with a `form_nonce`; `_start_over()` clears session state and bumps the nonce so the held photo/upload is dropped, not just unread. |
+| `clock_analyzer.py` | Builds the CDT prompt, calls Claude Opus 4.8 (vision), parses JSON. Scores MoCA (0–3), Shulman (1–5), Sunderland (1–10), **ACE-III clock (0–5)**, and the **Mendez CDIS (20 items, 0–20)**; the ACE-III/Mendez criteria live in `_ACE3_RULES` / `_MENDEZ_RULES`. The prompt reads hands by **length** — hour = the shorter hand, minute = the longer hand — and marks the time ambiguous if the hands aren't two distinguishable lengths. The `anthropic` SDK is imported lazily inside `analyze_clock` so the module imports without the SDK. |
+| `scoring_utils.py` | Pure helpers (`compute_time_correct`, `camera_can_work`) + the standardized-time constants (`STANDARD_HOUR/MINUTE`, `STANDARD_TIME_SPOKEN`). No Streamlit/SDK imports — unit-test here. |
+| `components/clock_camera/` | In-browser countdown auto-capture custom component (no npm build): live rear-camera preview → **Start** runs a 5→1 countdown → auto-grabs a frame → returns a `data:` URL that `normalize_image()` decodes. `__init__.py` wraps `declare_component`; `index.html` is the static frontend. Falls back to `back_camera_input`/`st.camera_input` if it can't import. |
 | `transient_output.py` | IP+date filename construction; write/delete temp files. No persistence. |
 | `test_basic.py` | pytest for the pure logic (runs without Streamlit, SDK, or an API key). Lives at the repo root; imports the top-level modules directly. |
 | `logos/` | Header branding (DataTecnica, Center for Alzheimer's, VCU). UI only; `render_header_logos()` in `app.py` skips any missing file. |
@@ -58,15 +59,21 @@ client-side probe (`streamlit-javascript`, optional) now only matters for the
 insecure signal. Don't "fix" a phone camera that fails on a `http://<lan-ip>`
 URL — that's the browser rule; use HTTPS/a tunnel.
 
-**Clock time default:** the picker defaults to the *user's* local time, not the
-server's (a deployed app runs in UTC). `user_local_now()` reads
-`st.context.timezone` / `timezone_offset` and `resolve_local_now()` (pure,
-tested) converts via `zoneinfo` (IANA name preferred, offset fallback). `tzdata`
-is in `requirements.txt` so `zoneinfo` resolves on any host.
-Capture defaults to the **rear camera** (`streamlit-back-camera-input`, optional,
-falls back to `st.camera_input`) so it points at the drawing, not the user's face.
-All sources are normalized to `(bytes, mime)` by `normalize_image()` (pure, tested);
-keep that the single chokepoint so new capture sources don't fan out type handling.
+**Command time is FIXED, not the current time:** the person is asked to draw the
+standardized CDT time **"ten past eleven" (11:10)** — `STANDARD_HOUR/MINUTE` and
+`STANDARD_TIME_SPOKEN` in `scoring_utils.py`. This is the convention the Mendez
+CDIS is built around (its item 4 keys on the "2", item 9 on the "11"). There is
+**no** time picker; don't reintroduce one without a deliberate decision. (The
+older `resolve_local_now()` / `to_24h` / `to_12h` helpers remain in
+`scoring_utils.py` — still pure and tested — but `app.py` no longer drives a
+picker with them.)
+
+Capture defaults to the **rear camera** via the `components/clock_camera`
+countdown component (then `streamlit-back-camera-input`, then `st.camera_input`)
+so it points at the drawing, not the user's face. All sources are normalized to
+`(bytes, mime)` by `normalize_image()` (pure, tested) — including the component's
+`data:` URL — so keep that the single chokepoint; new capture sources shouldn't
+fan out type handling.
 
 ## Run
 
